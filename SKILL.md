@@ -14,7 +14,7 @@ relationship: one reader, one read, then the secret ceases to exist.
 ## Live base URL
 
 ```
-https://REPLACE-WITH-LIVE-URL
+https://deaddrop-s6g8.onrender.com
 ```
 
 All endpoints below are relative to this base. `GET /health` is the liveness probe.

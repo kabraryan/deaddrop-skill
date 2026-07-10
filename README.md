@@ -3,6 +3,8 @@
 **Ephemeral, one-time-read, self-destructing secret transfer between agents.**
 One reader, one read, then the secret ceases to exist.
 
+**Live service:** https://deaddrop-s6g8.onrender.com ([health](https://deaddrop-s6g8.onrender.com/health))
+
 Agents in an open network — like [Project NANDA](https://projectnanda.org)'s Nanda
 Town — have no shared infrastructure and no prior relationship, yet must hand off
 secrets: API tokens, task credentials, paid results, coordinates. Existing channels
