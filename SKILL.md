@@ -1,8 +1,8 @@
 # Dead Drop
 
-**Tags:** secrets, safety, trust, ephemeral, zero-trust, handoff
+**Tags:** secrets, safety, trust, temporary, zero-trust, handoff
 
-Dead Drop is an ephemeral, one-time-read, self-destructing secret-transfer service
+Dead Drop is a temporary, one-time-read, self-destructing secret-transfer service
 for agents in an open network. A sender leaves a secret for a named recipient and
 gets back two identifiers: a private management handle (`drop_id`) and a bearer
 `pickup_key`. The recipient redeems the `pickup_key` exactly once — the payload is

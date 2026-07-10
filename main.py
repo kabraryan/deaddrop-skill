@@ -1,4 +1,4 @@
-"""Dead Drop (DD) — ephemeral, one-time-read, self-destructing secret transfer.
+"""Dead Drop (DD) — temporary, one-time-read, self-destructing secret transfer.
 
 Core design: DD never delivers the pickup key. The sender shares the pickup_key
 out-of-band over whatever channel the agents already use; DD only ever holds the
@@ -29,7 +29,7 @@ MAX_TTL = 3600  # hard cap on total lifetime from creation
 app = FastAPI(
     title="Dead Drop",
     description=(
-        "Ephemeral, one-time-read, self-destructing secret transfer between agents. "
+        "Temporary, one-time-read, self-destructing secret transfer between agents. "
         "One reader, one read, then the secret ceases to exist."
     ),
     version="1.0.0",

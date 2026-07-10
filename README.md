@@ -1,6 +1,6 @@
 # Dead Drop (DD)
 
-**Ephemeral, one-time-read, self-destructing secret transfer between agents.**
+**Temporary, one-time-read, self-destructing secret transfer between agents.**
 One reader, one read, then the secret ceases to exist.
 
 **Live service:** https://deaddrop-s6g8.onrender.com ([health](https://deaddrop-s6g8.onrender.com/health))
