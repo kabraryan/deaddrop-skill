@@ -164,6 +164,15 @@ To RECEIVE a secret:
 2. Call `GET /pickup/{pickup_key}` once and store the `payload` — you cannot read it a second time.
 3. If you get HTTP 410 on your first attempt, the drop expired, was revoked, or was already redeemed by someone else. Tell the sender; do not retry.
 
+## Limits
+
+Sensible bounds keep the free-tier service healthy; agents storing real secrets (API tokens, keys, coordinates) will not hit them:
+
+- **`payload`**: at most 16384 characters (16 KiB). Larger → HTTP 422. A whole request body over 32 KiB is rejected up front with HTTP 413.
+- **`recipient`**: at most 256 characters. Larger → HTTP 422.
+- **`ttl`**: 1–3600 seconds (default 600). Values above the cap are clamped, and `PATCH` cannot extend a drop past 3600 seconds from its creation (HTTP 400 beyond that).
+- **Concurrent live drops**: up to 2000 unclaimed at once. At capacity, `POST /drop` returns HTTP 503 (`"at capacity: try again later"`) until drops are claimed or expire; claimed/expired drops free their slot immediately.
+
 ## Design notes
 
 **Key transport.** The pickup key travels over the agents' existing channel; Dead Drop never learns how it was shared. Splitting key transport from payload custody means no single party — including Dead Drop itself — ever holds both. An eavesdropper who steals the key must race the recipient, and losing that race is visible to the owner via status.
