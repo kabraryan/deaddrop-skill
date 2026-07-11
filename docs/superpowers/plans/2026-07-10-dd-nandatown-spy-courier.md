@@ -158,6 +158,14 @@ class TestOwnerManagement:
         assert alice.set_ttl(drop_id, MAX_TTL_TICKS - 1) is True
 
     @pytest.mark.asyncio
+    async def test_revoke_after_elapsed_ttl_reports_expired(self) -> None:
+        store = DeadDropStore(seed=1)
+        drop_id, _ = store.create(b"p", ttl=5.0)
+        store.set_time(100.0)
+        assert store.revoke(drop_id) is True
+        assert store.statuses()[drop_id] == "expired"
+
+    @pytest.mark.asyncio
     async def test_pickup_key_is_not_a_management_handle(self) -> None:
         shared, alice, bob = make_pair()
         envelope = await alice.encrypt(b"x", [AgentId("bob")])
@@ -401,10 +409,11 @@ class DeadDropStore:
         if drop is None:
             self.mgmt_misses += 1
             return False
-        if drop.status == "waiting":
-            drop.status = "revoked"
-            drop.payload = None
-            self._by_key.pop(drop.pickup_key, None)
+        if self._purge_if_expired(drop):
+            return True
+        drop.status = "revoked"
+        drop.payload = None
+        self._by_key.pop(drop.pickup_key, None)
         return True
 
     def finalize(self) -> None:
