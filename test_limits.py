@@ -17,7 +17,7 @@ def _client() -> TestClient:
 
 def test_oversized_payload_rejected() -> None:
     client = _client()
-    r = client.post("/drop", json={"recipient": "b", "payload": "A" * 70000, "ttl": 600})
+    r = client.post("/drop", json={"recipient": "b", "payload": "A" * 20000, "ttl": 600})
     assert r.status_code == 422
 
 
@@ -36,8 +36,8 @@ def test_normal_drop_still_accepted() -> None:
 
 def test_max_payload_boundary_accepted() -> None:
     client = _client()
-    # Exactly at the 65536 cap must still be accepted.
-    r = client.post("/drop", json={"recipient": "b", "payload": "A" * 65536, "ttl": 600})
+    # Exactly at the 16384 cap must still be accepted.
+    r = client.post("/drop", json={"recipient": "b", "payload": "A" * 16384, "ttl": 600})
     assert r.status_code == 200
 
 

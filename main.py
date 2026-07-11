@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 
 DEFAULT_TTL = 600
 MAX_TTL = 3600  # hard cap on total lifetime from creation
-MAX_DROPS = 10000  # cap on concurrently-stored drops; guards free-tier memory
+MAX_DROPS = 2000  # cap on concurrently-stored drops; with the payload cap this bounds worst-case memory well under the free-tier limit
 
 app = FastAPI(
     title="Dead Drop",
@@ -119,10 +119,9 @@ def _purge_if_expired(drop: Drop) -> bool:
 # ---------------------------------------------------------------------------
 class DropRequest(BaseModel):
     # Length caps bound per-request memory on a public, unauthenticated endpoint.
-    # 64 KiB is comfortably larger than any realistic secret (tokens, keys,
-    # coordinates) while blocking multi-MB memory-exhaustion payloads.
+    # 16 KiB is far larger than any realistic secret (tokens, keys, certs are <4 KiB) while blocking memory-exhaustion payloads.
     recipient: str = Field(max_length=256)
-    payload: str = Field(max_length=65536)
+    payload: str = Field(max_length=16384)
     ttl: int = Field(default=DEFAULT_TTL)
 
 
@@ -139,8 +138,10 @@ def create_drop(req: DropRequest):
         raise HTTPException(status_code=503, detail="draining: not accepting new drops")
 
     # Reject new drops when the store is full so a flood of POSTs cannot exhaust
-    # memory on the free tier. Reading len() is atomic under CPython; a stale
-    # read here is harmless (the cap is a coarse safety bound, not an invariant).
+    # memory on the free tier. The len() read is intentionally outside the lock:
+    # this is a coarse safety bound, not an invariant. The service runs a single
+    # uvicorn worker whose sync routes share one ~40-thread limiter, so the worst
+    # case is a small bounded overshoot (~tens of drops), which is harmless.
     if len(_drops) >= MAX_DROPS:
         raise HTTPException(status_code=503, detail="at capacity: try again later")
 
