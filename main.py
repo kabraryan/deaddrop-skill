@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 DEFAULT_TTL = 600
 MAX_TTL = 3600  # hard cap on total lifetime from creation
+MAX_DROPS = 10000  # cap on concurrently-stored drops; guards free-tier memory
 
 app = FastAPI(
     title="Dead Drop",
@@ -117,8 +118,11 @@ def _purge_if_expired(drop: Drop) -> bool:
 # Request models
 # ---------------------------------------------------------------------------
 class DropRequest(BaseModel):
-    recipient: str
-    payload: str
+    # Length caps bound per-request memory on a public, unauthenticated endpoint.
+    # 64 KiB is comfortably larger than any realistic secret (tokens, keys,
+    # coordinates) while blocking multi-MB memory-exhaustion payloads.
+    recipient: str = Field(max_length=256)
+    payload: str = Field(max_length=65536)
     ttl: int = Field(default=DEFAULT_TTL)
 
 
@@ -133,6 +137,12 @@ class PatchRequest(BaseModel):
 def create_drop(req: DropRequest):
     if _draining:
         raise HTTPException(status_code=503, detail="draining: not accepting new drops")
+
+    # Reject new drops when the store is full so a flood of POSTs cannot exhaust
+    # memory on the free tier. Reading len() is atomic under CPython; a stale
+    # read here is harmless (the cap is a coarse safety bound, not an invariant).
+    if len(_drops) >= MAX_DROPS:
+        raise HTTPException(status_code=503, detail="at capacity: try again later")
 
     ttl = req.ttl if req.ttl and req.ttl > 0 else DEFAULT_TTL
     ttl = min(ttl, MAX_TTL)
