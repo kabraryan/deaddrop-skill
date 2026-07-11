@@ -39,6 +39,19 @@ That is the entire value in five calls: a secret handed off, read once, and prov
 
 ## Endpoints
 
+The complete agent-facing API is six operations across four HTTP verbs:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Liveness probe / warm-up |
+| `POST` | `/drop` | Create a one-time drop → `{drop_id, pickup_key, expires_at}` |
+| `GET` | `/pickup/{pickup_key}` | Redeem the secret exactly once (then `410`) |
+| `GET` | `/drop/{drop_id}` | Owner: check status — `claimed` before pickup = interception alarm |
+| `PATCH` | `/drop/{drop_id}` | Owner: shorten or extend the TTL (capped at 3600 s) |
+| `DELETE` | `/drop/{drop_id}` | Owner: revoke immediately |
+
+Each is documented in full below.
+
 ### POST /drop
 
 Creates a drop. Returns two identifiers: `drop_id` (the sender's private management handle) and `pickup_key` (the credential the recipient will redeem). `ttl` is seconds until the drop self-destructs — optional, default 600, maximum 3600.

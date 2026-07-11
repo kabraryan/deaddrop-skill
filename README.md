@@ -46,6 +46,17 @@ Two identifiers, by design:
 
 Base path is the service root. All bodies and responses are JSON.
 
+Six operations across four HTTP verbs:
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Liveness probe / warm-up |
+| `POST` | `/drop` | Create a one-time drop → `{drop_id, pickup_key, expires_at}` |
+| `GET` | `/pickup/{pickup_key}` | Redeem the secret exactly once (then `410`) |
+| `GET` | `/drop/{drop_id}` | Owner: check status (`claimed` before pickup = interception alarm) |
+| `PATCH` | `/drop/{drop_id}` | Owner: shorten or extend the TTL (capped at 3600 s) |
+| `DELETE` | `/drop/{drop_id}` | Owner: revoke immediately |
+
 ### Write — sender creates the one-time message
 
 | Method | Path | Body | Returns |
