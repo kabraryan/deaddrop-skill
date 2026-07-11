@@ -17,6 +17,7 @@ protocol-coherent, not a durability bug.
 
 import os
 import secrets
+import threading
 import time
 from typing import Dict, Optional
 
@@ -69,6 +70,14 @@ _drops: Dict[str, Drop] = {}
 _key_index: Dict[str, str] = {}
 # Graceful-shutdown flag: when draining, reject new drops but honor existing.
 _draining = False
+
+# The route handlers are declared `def` (sync), so Starlette runs them in a
+# threadpool — real thread concurrency over the shared dicts above. Pickup is a
+# check-then-act (read status, then flip to "claimed"); without mutual exclusion
+# two concurrent redemptions of the same key could BOTH observe "waiting" and
+# both receive the payload, breaking the one-time-read guarantee. This lock
+# serializes every state transition. Helpers below assume the caller holds it.
+_lock = threading.Lock()
 
 
 def _now() -> float:
@@ -127,8 +136,9 @@ def create_drop(req: DropRequest):
     expires_at = created_at + ttl
 
     drop = Drop(drop_id, pickup_key, req.recipient, req.payload, created_at, expires_at)
-    _drops[drop_id] = drop
-    _key_index[pickup_key] = drop_id
+    with _lock:
+        _drops[drop_id] = drop
+        _key_index[pickup_key] = drop_id
 
     return {
         "drop_id": drop_id,
@@ -148,25 +158,27 @@ def pickup(pickup_key: str):
     404 distinction, so adversaries cannot probe which keys are valid. The
     interception signal belongs to the owner via GET /drop/{drop_id}.
     """
-    drop_id = _key_index.get(pickup_key)
-    if drop_id is None:
-        # Unknown / already-destroyed key. Indistinguishable to caller.
-        raise HTTPException(status_code=410, detail="gone")
+    with _lock:
+        drop_id = _key_index.get(pickup_key)
+        if drop_id is None:
+            # Unknown / already-destroyed key. Indistinguishable to caller.
+            raise HTTPException(status_code=410, detail="gone")
 
-    drop = _drops.get(drop_id)
-    if drop is None:
-        raise HTTPException(status_code=410, detail="gone")
+        drop = _drops.get(drop_id)
+        if drop is None:
+            raise HTTPException(status_code=410, detail="gone")
 
-    if _purge_if_expired(drop):
-        raise HTTPException(status_code=410, detail="gone")
+        if _purge_if_expired(drop):
+            raise HTTPException(status_code=410, detail="gone")
 
-    if drop.status != "waiting":
-        raise HTTPException(status_code=410, detail="gone")
+        if drop.status != "waiting":
+            raise HTTPException(status_code=410, detail="gone")
 
-    # Success: capture payload, mark claimed, destroy the secret immediately.
-    payload = drop.payload
-    drop.status = "claimed"
-    _destroy_payload(drop)
+        # Success: capture payload, mark claimed, destroy the secret immediately.
+        # Holding the lock across check-and-flip is what makes this exactly-once.
+        payload = drop.payload
+        drop.status = "claimed"
+        _destroy_payload(drop)
     return {"payload": payload}
 
 
@@ -175,51 +187,54 @@ def pickup(pickup_key: str):
 # ---------------------------------------------------------------------------
 @app.get("/drop/{drop_id}")
 def status(drop_id: str):
-    drop = _drops.get(drop_id)
-    if drop is None:
-        raise HTTPException(status_code=404, detail="unknown drop_id")
+    with _lock:
+        drop = _drops.get(drop_id)
+        if drop is None:
+            raise HTTPException(status_code=404, detail="unknown drop_id")
 
-    _purge_if_expired(drop)
-    return {"status": drop.status, "expires_at": drop.expires_at}
+        _purge_if_expired(drop)
+        return {"status": drop.status, "expires_at": drop.expires_at}
 
 
 @app.patch("/drop/{drop_id}")
 def patch_drop(drop_id: str, req: PatchRequest):
-    drop = _drops.get(drop_id)
-    if drop is None:
-        raise HTTPException(status_code=404, detail="unknown drop_id")
+    with _lock:
+        drop = _drops.get(drop_id)
+        if drop is None:
+            raise HTTPException(status_code=404, detail="unknown drop_id")
 
-    if _purge_if_expired(drop):
-        raise HTTPException(status_code=410, detail="gone")
-    if drop.status != "waiting":
-        raise HTTPException(status_code=410, detail="gone")
+        if _purge_if_expired(drop):
+            raise HTTPException(status_code=410, detail="gone")
+        if drop.status != "waiting":
+            raise HTTPException(status_code=410, detail="gone")
 
-    if req.ttl is None or req.ttl <= 0:
-        raise HTTPException(status_code=400, detail="ttl must be a positive integer")
+        if req.ttl is None or req.ttl <= 0:
+            raise HTTPException(status_code=400, detail="ttl must be a positive integer")
 
-    new_expiry = _now() + req.ttl
-    hard_cap = drop.created_at + MAX_TTL
-    # Shortening is unrestricted; extension is capped at MAX_TTL from creation.
-    if new_expiry > hard_cap:
-        raise HTTPException(
-            status_code=400,
-            detail=f"extension exceeds hard cap of {MAX_TTL}s from creation",
-        )
+        new_expiry = _now() + req.ttl
+        hard_cap = drop.created_at + MAX_TTL
+        # Shortening is unrestricted; extension is capped at MAX_TTL from creation.
+        if new_expiry > hard_cap:
+            raise HTTPException(
+                status_code=400,
+                detail=f"extension exceeds hard cap of {MAX_TTL}s from creation",
+            )
 
-    drop.expires_at = new_expiry
-    return {"status": drop.status, "expires_at": drop.expires_at}
+        drop.expires_at = new_expiry
+        return {"status": drop.status, "expires_at": drop.expires_at}
 
 
 @app.delete("/drop/{drop_id}")
 def revoke_drop(drop_id: str):
-    drop = _drops.get(drop_id)
-    if drop is None:
-        raise HTTPException(status_code=404, detail="unknown drop_id")
+    with _lock:
+        drop = _drops.get(drop_id)
+        if drop is None:
+            raise HTTPException(status_code=404, detail="unknown drop_id")
 
-    if not _purge_if_expired(drop) and drop.status == "waiting":
-        drop.status = "revoked"
-        _destroy_payload(drop)
-    return {"status": drop.status}
+        if not _purge_if_expired(drop) and drop.status == "waiting":
+            drop.status = "revoked"
+            _destroy_payload(drop)
+        return {"status": drop.status}
 
 
 # ---------------------------------------------------------------------------
@@ -227,11 +242,12 @@ def revoke_drop(drop_id: str):
 # ---------------------------------------------------------------------------
 def _count_waiting() -> int:
     """Count genuinely-live waiting drops, lazily purging expired ones as we scan."""
-    waiting = 0
-    for drop in list(_drops.values()):
-        if not _purge_if_expired(drop) and drop.status == "waiting":
-            waiting += 1
-    return waiting
+    with _lock:
+        waiting = 0
+        for drop in list(_drops.values()):
+            if not _purge_if_expired(drop) and drop.status == "waiting":
+                waiting += 1
+        return waiting
 
 
 @app.get("/health")
@@ -245,7 +261,9 @@ def health():
 
 def _require_admin(token: Optional[str]) -> None:
     expected = os.environ.get("DD_ADMIN_TOKEN")
-    if not expected or token != expected:
+    # Fail closed when unset, and use a constant-time compare so the token can't
+    # be recovered byte-by-byte via response-timing on these public endpoints.
+    if not expected or token is None or not secrets.compare_digest(token, expected):
         raise HTTPException(status_code=403, detail="forbidden")
 
 
@@ -260,7 +278,12 @@ def drain(x_admin_token: Optional[str] = Header(default=None)):
 @app.post("/admin/burn")
 def burn(x_admin_token: Optional[str] = Header(default=None)):
     _require_admin(x_admin_token)
-    burned = _count_waiting()
-    _drops.clear()
-    _key_index.clear()
+    with _lock:
+        burned = sum(
+            1
+            for drop in _drops.values()
+            if not _purge_if_expired(drop) and drop.status == "waiting"
+        )
+        _drops.clear()
+        _key_index.clear()
     return {"status": "burned", "destroyed": burned}

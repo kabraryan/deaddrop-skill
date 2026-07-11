@@ -6,7 +6,36 @@ Dead Drop stores one secret for one named recipient and releases it exactly once
 
 https://deaddrop-s6g8.onrender.com
 
-Note: this is a free-tier host. After ~15 minutes idle the first request takes 30–60 seconds to answer. Send `GET /health` first as a warm-up, then proceed.
+Note: this is a free-tier host. After ~15 minutes idle the first request takes 30–60 seconds to answer. Send `GET /health` first as a warm-up and allow it up to 90 seconds; if that first call times out, simply send it again — the second request returns immediately. Once `/health` returns `200`, every other endpoint responds in milliseconds.
+
+## Quickstart (one agent, self-contained)
+
+A single agent can exercise the whole protocol by itself — no second party required. Copy the `pickup_key` from step 2 into the URL in step 3.
+
+```bash
+# 1. Warm up (ignore a slow first response; retry once if it times out)
+curl https://deaddrop-s6g8.onrender.com/health
+
+# 2. Store a secret — note the drop_id and pickup_key in the response
+curl -X POST https://deaddrop-s6g8.onrender.com/drop \
+  -H "Content-Type: application/json" \
+  -d '{"recipient": "agent-bob", "payload": "api-token-XYZ-9981", "ttl": 600}'
+# -> {"drop_id":"<DID>","pickup_key":"<KEY>","expires_at":...}
+
+# 3. Redeem the secret exactly once (use the pickup_key from step 2)
+curl https://deaddrop-s6g8.onrender.com/pickup/<KEY>
+# -> {"payload":"api-token-XYZ-9981"}
+
+# 4. Prove it is gone — the same key now returns HTTP 410
+curl -i https://deaddrop-s6g8.onrender.com/pickup/<KEY>
+# -> HTTP/1.1 410 Gone ... {"detail":"gone"}
+
+# 5. Confirm the owner-side alarm — status is now "claimed" (use the drop_id from step 2)
+curl https://deaddrop-s6g8.onrender.com/drop/<DID>
+# -> {"status":"claimed","expires_at":...}
+```
+
+That is the entire value in five calls: a secret handed off, read once, and provably destroyed. The two-party framing below (sender shares only the key out-of-band; recipient redeems) is how it is used between real agents, but any single agent can verify every step alone.
 
 ## Endpoints
 
@@ -116,16 +145,13 @@ Example response:
 {"status":"ok","drops_waiting":0,"uptime_s":1061.74}
 ```
 
-### Operator-only endpoints (require the service admin token; agents do not use these)
-
-- `POST /admin/drain` — header `X-Admin-Token: <token>`. Stops accepting new drops (new `POST /drop` returns 503); existing drops stay claimable until they expire. Response: `{"status":"draining","drops_waiting":3}`.
-- `POST /admin/burn` — header `X-Admin-Token: <token>`. Destroys all drops instantly; the service stays up. Response: `{"status":"burned","destroyed":2}`. Without a valid token both return HTTP 403.
+The service also exposes two operator-only maintenance endpoints (`/admin/drain`, `/admin/burn`) guarded by a private admin token. Agents never call these and they are intentionally omitted here — the six endpoints above are the complete agent-facing surface.
 
 ## How the agent should use this
 
 To SEND a secret to another agent:
 
-1. Call `GET /health` once to wake the service.
+1. Call `GET /health` once to wake the service (allow up to 90s; retry once if it times out).
 2. Call `POST /drop` with the recipient's name, the secret as `payload`, and a `ttl` in seconds.
 3. Save the `drop_id` from the response. Keep it private — it is your management handle.
 4. Send the `pickup_key` from the response to the recipient over whatever channel you already use to talk to them. Do not send the `drop_id`.
