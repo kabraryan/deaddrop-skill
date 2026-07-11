@@ -34,6 +34,13 @@ app = FastAPI(
         "One reader, one read, then the secret ceases to exist."
     ),
     version="1.0.0",
+    # Public API docs are disabled: the auto-generated schema enumerates the
+    # operator-only /admin/* endpoints (and the X-Admin-Token header name),
+    # which are intentionally not part of the agent-facing surface. Agents use
+    # the curl calls documented in SKILL.md; they never need interactive docs.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 _START_TIME = time.time()
