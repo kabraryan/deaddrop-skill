@@ -26,7 +26,11 @@ from pydantic import BaseModel, Field
 
 DEFAULT_TTL = 600
 MAX_TTL = 3600  # hard cap on total lifetime from creation
-MAX_DROPS = 2000  # cap on concurrently-stored drops; with the payload cap this bounds worst-case memory well under the free-tier limit
+MAX_DROPS = 2000  # cap on concurrently-LIVE drops; with the payload cap this bounds worst-case memory well under the free-tier limit
+_MAX_BODY_BYTES = 32 * 1024  # reject request bodies larger than this before they
+# are buffered. The payload Field(max_length) cap only fires AFTER FastAPI parses
+# the whole body — too late to bound memory. ~32 KiB fits a max 16 KiB payload
+# plus the JSON envelope and recipient.
 
 app = FastAPI(
     title="Dead Drop",
@@ -45,6 +49,39 @@ app = FastAPI(
 )
 
 _START_TIME = time.time()
+
+
+class _LimitBodySize:
+    """Pure-ASGI middleware: reject over-large request bodies (by declared
+    Content-Length) with 413 before the application reads them into memory."""
+
+    def __init__(self, app, max_bytes: int):
+        self._app = app
+        self._max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            for name, value in scope.get("headers", []):
+                if name == b"content-length":
+                    try:
+                        too_big = int(value) > self._max_bytes
+                    except ValueError:
+                        too_big = True
+                    if too_big:
+                        await send({
+                            "type": "http.response.start",
+                            "status": 413,
+                            "headers": [(b"content-type", b"application/json")],
+                        })
+                        await send({
+                            "type": "http.response.body",
+                            "body": b'{"detail":"payload too large"}',
+                        })
+                        return
+        await self._app(scope, receive, send)
+
+
+app.add_middleware(_LimitBodySize, max_bytes=_MAX_BODY_BYTES)
 
 
 class Drop:
@@ -137,14 +174,6 @@ def create_drop(req: DropRequest):
     if _draining:
         raise HTTPException(status_code=503, detail="draining: not accepting new drops")
 
-    # Reject new drops when the store is full so a flood of POSTs cannot exhaust
-    # memory on the free tier. The len() read is intentionally outside the lock:
-    # this is a coarse safety bound, not an invariant. The service runs a single
-    # uvicorn worker whose sync routes share one ~40-thread limiter, so the worst
-    # case is a small bounded overshoot (~tens of drops), which is harmless.
-    if len(_drops) >= MAX_DROPS:
-        raise HTTPException(status_code=503, detail="at capacity: try again later")
-
     ttl = req.ttl if req.ttl and req.ttl > 0 else DEFAULT_TTL
     ttl = min(ttl, MAX_TTL)
 
@@ -155,6 +184,13 @@ def create_drop(req: DropRequest):
 
     drop = Drop(drop_id, pickup_key, req.recipient, req.payload, created_at, expires_at)
     with _lock:
+        # Cap on LIVE (waiting, payload-bearing) drops. Terminal tombstones
+        # (claimed/expired/revoked) hold no payload and must NOT count, or the
+        # store would permanently 503 after MAX_DROPS cumulative creates —
+        # self-DoS with no attacker. Counted under the lock so count-and-insert
+        # is atomic.
+        if _count_waiting_locked() >= MAX_DROPS:
+            raise HTTPException(status_code=503, detail="at capacity: try again later")
         _drops[drop_id] = drop
         _key_index[pickup_key] = drop_id
 
@@ -258,14 +294,19 @@ def revoke_drop(drop_id: str):
 # ---------------------------------------------------------------------------
 # OPERATIONS
 # ---------------------------------------------------------------------------
+def _count_waiting_locked() -> int:
+    """Count genuinely-live waiting drops, lazily purging expired ones as we
+    scan. Caller MUST hold _lock (threading.Lock is not reentrant)."""
+    waiting = 0
+    for drop in list(_drops.values()):
+        if not _purge_if_expired(drop) and drop.status == "waiting":
+            waiting += 1
+    return waiting
+
+
 def _count_waiting() -> int:
-    """Count genuinely-live waiting drops, lazily purging expired ones as we scan."""
     with _lock:
-        waiting = 0
-        for drop in list(_drops.values()):
-            if not _purge_if_expired(drop) and drop.status == "waiting":
-                waiting += 1
-        return waiting
+        return _count_waiting_locked()
 
 
 @app.get("/health")

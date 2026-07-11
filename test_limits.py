@@ -41,15 +41,30 @@ def test_max_payload_boundary_accepted() -> None:
     assert r.status_code == 200
 
 
-def test_store_count_cap_returns_503() -> None:
+def test_capacity_counts_only_live_drops() -> None:
     client = _client()
-    # Shrink the cap for the test so we don't create 10k drops.
     original = main.MAX_DROPS
     main.MAX_DROPS = 3
     try:
+        keys = []
         for _ in range(3):
-            assert client.post("/drop", json={"recipient": "b", "payload": "x", "ttl": 600}).status_code == 200
-        r = client.post("/drop", json={"recipient": "b", "payload": "x", "ttl": 600})
-        assert r.status_code == 503
+            r = client.post("/drop", json={"recipient": "b", "payload": "x", "ttl": 600})
+            assert r.status_code == 200
+            keys.append(r.json()["pickup_key"])
+        # At the live cap: a 4th create is rejected.
+        assert client.post("/drop", json={"recipient": "b", "payload": "x", "ttl": 600}).status_code == 503
+        # Consume one drop; its claimed tombstone must NOT count toward the cap.
+        assert client.get(f"/pickup/{keys[0]}").status_code == 200
+        # A new create now succeeds — consuming a drop freed a live slot.
+        assert client.post("/drop", json={"recipient": "b", "payload": "x", "ttl": 600}).status_code == 200
     finally:
         main.MAX_DROPS = original
+
+
+def test_oversized_body_rejected_before_read() -> None:
+    client = _client()
+    # A body far larger than _MAX_BODY_BYTES is rejected with 413 by declared
+    # Content-Length, before FastAPI buffers/parses it.
+    big = "A" * (main._MAX_BODY_BYTES + 10000)
+    r = client.post("/drop", json={"recipient": "b", "payload": big, "ttl": 600})
+    assert r.status_code == 413
