@@ -129,7 +129,7 @@ class SimStore:
         drop = self.drops.get(drop_id)
         if drop is None:
             return False
-        if drop.status == "waiting":
+        if not self._purge_if_expired(drop, now) and drop.status == "waiting":
             drop.status = "revoked"
             drop.payload = None
             self.by_key.pop(drop.pickup_key, None)

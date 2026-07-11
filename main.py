@@ -216,7 +216,7 @@ def revoke_drop(drop_id: str):
     if drop is None:
         raise HTTPException(status_code=404, detail="unknown drop_id")
 
-    if drop.status == "waiting":
+    if not _purge_if_expired(drop) and drop.status == "waiting":
         drop.status = "revoked"
         _destroy_payload(drop)
     return {"status": drop.status}
